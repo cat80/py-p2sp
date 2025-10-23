@@ -1,9 +1,3 @@
-import sys
-import os
-
-# Add the parent directory to the path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-
 from sqlalchemy import (
     create_engine,
     Column,
@@ -15,7 +9,8 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, sessionmaker
+from sqlalchemy.sql import func
 import datetime
 
 Base = declarative_base()
