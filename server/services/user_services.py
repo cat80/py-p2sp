@@ -6,8 +6,9 @@ from sqlalchemy.future import select
 
 class UserServices():
 
-    def __init__(self,server=None):
+    def __init__(self,server=None,async_db_factory=None):
         pass
+        self.async_db_factory = async_db_factory if async_db_factory else AsyncSessionFactory
         # self.server = server
 
     async def login(self,username,password,loginip=''):
@@ -16,9 +17,7 @@ class UserServices():
         :return:
         """
         if not username or not password:
-
             return False,'用户名密码不能为空'
-
         async with AsyncSessionFactory() as session:
             async with session.begin():
                 result = await session.execute(select(User).where(User.username == username))
