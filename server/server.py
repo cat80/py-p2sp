@@ -1,18 +1,35 @@
 import asyncio
 import logging
-from server.db import create_db_and_tables, close_engine
+from server.db.session import create_db_and_tables, close_engine
 from common.protocol import AsyncProtocol
 from server.handler import ServerMessageHandler
+from server.services.user_service import UserService
+from server.services.friend_service import FriendService
+from server.services.admin_service import AdminService
+from server.managers.connection_manager import ConnectionManager
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class ChatServer:
-    def __init__(self, host='127.0.0.1', port=8888):
+    def __init__(self, host='1227.0.0.1', port=8888):
         self.host = host
         self.port = port
         self.server = None
-        self.online_users = {}
-        self.handler = ServerMessageHandler(self)
+        
+        # 1. Instantiate Managers and Services
+        connection_manager = ConnectionManager()
+        user_service = UserService(connection_manager)
+        friend_service = FriendService(connection_manager)
+        admin_service = AdminService(connection_manager)
+        
+        # 2. Inject all dependencies into the handler
+        self.handler = ServerMessageHandler(
+            self, 
+            user_service, 
+            friend_service, 
+            admin_service,
+            connection_manager
+        )
 
     async def handle_client(self, reader, writer):
         addr = writer.get_extra_info('peername')
@@ -25,7 +42,11 @@ class ChatServer:
                 message, buffer = await AsyncProtocol.deserialize_stream(reader, buffer)
                 if message is None:
                     break
-                await self.handler.handle_message(writer, message)
+                
+                # The handler now returns the user_id upon a successful login
+                logged_in_user_id = await self.handler.handle_message(writer, message)
+                if logged_in_user_id:
+                    user_id = logged_in_user_id
 
         except asyncio.CancelledError:
             logging.info(f"Connection from {addr} cancelled.")
@@ -33,8 +54,8 @@ class ChatServer:
             logging.error(f"An error occurred with {addr}: {e}")
         finally:
             logging.info(f"Connection from {addr} closed.")
-            if user_id and user_id in self.online_users:
-                del self.online_users[user_id]
+            if user_id:
+                self.handler.connection_manager.remove_user(user_id)
             writer.close()
             await writer.wait_closed()
 

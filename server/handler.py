@@ -1,152 +1,116 @@
-from __future__ import annotations
+import logging
 from typing import TYPE_CHECKING
-from sqlalchemy.future import select
-from server import auth
-from server.db import AsyncSessionFactory
-from server.models import User, UserFriend, Group, GroupMember
+
+from common.dto import Request, Response
 from common.protocol import protocol
-from server.services.user_services import UserServices
+from server.db.session import get_session
+from server.repository.user_repository import UserRepository
+from server.services.user_service import UserService
+from server.services.friend_service import FriendService
+from server.services.admin_service import AdminService
+from server.managers.connection_manager import ConnectionManager
+
+
 if TYPE_CHECKING:
     from server.server import ChatServer
 
+class CommandNotFoundError(Exception):
+    pass
 
 class ServerMessageHandler:
-    def __init__(self, server: ChatServer):
+    def __init__(
+        self, 
+        server: "ChatServer", 
+        user_service: UserService, 
+        friend_service: FriendService,
+        admin_service: AdminService,
+        connection_manager: ConnectionManager
+    ):
         self.server = server
-        # 流入当前的服务对象
-        self.user_service = UserServices(server)
+        self._user_service = user_service
+        self._friend_service = friend_service
+        self._admin_service = admin_service
+        self.connection_manager = connection_manager
+        
+        # Command map routes all message types to the appropriate service methods
+        self.command_map = {
+            # User Service
+            'login': self._user_service.login,
+            'reg': self._user_service.register,
+            # Friend Service
+            'add_friend': self._friend_service.request_friend,
+            'accept_friend': self._friend_service.accept_friend,
+            'delete_friend': self._friend_service.delete_friend,
+            # Admin Service
+            'broadcast': self._admin_service.broadcast_message,
+            'ban_user': self._admin_service.ban_user,
+        }
 
     async def handle_message(self, writer, message: dict):
         """
-        Process incoming messages from clients.
+        Acts as a central dispatcher for all incoming messages.
+        Orchestrates the request lifecycle: session -> request -> service -> response -> network message.
         """
         msg_type = message.get('type')
-        payload = message.get('payload')
-        auth_token = payload.get('auth_token')
+        payload = message.get('payload', {})
+        
+        logged_in_user_id = None
 
-        async with AsyncSessionFactory() as session:
-            user = await auth.get_user_by_token(session, auth_token)
-            if not user and msg_type not in ['login', 'reg']:
-                response = protocol.create_normal_message("Authentication required.")
-                writer.write(response)
-                await writer.drain()
-                return
+        async with get_session() as session:
+            try:
+                # 1. Find the service method from the command map
+                service_method = self.command_map.get(msg_type)
+                if not service_method:
+                    raise CommandNotFoundError(f"Unknown command: {msg_type}")
 
-            handler_method = getattr(self, f"handle_{msg_type}", self.handle_unknown_message)
-            await handler_method(writer, user, payload)
+                # 2. Authenticate user for non-auth commands
+                user = None
+                auth_token = payload.get('auth_token')
+                user_repo = UserRepository(session)
+                user = await user_repo.get_by_token(auth_token)
 
-    async def handle_send(self, writer, user, payload: dict):
-        recipient_username = payload.get('to_user')
-        message_text = payload.get('message')
+                if msg_type not in ['login', 'reg']:
+                    if not user:
+                        raise PermissionError("Authentication required.")
+                    if user.status == 0:
+                        raise PermissionError("User is banned.")
 
-        if not recipient_username or not message_text:
-            response = protocol.create_normal_message("Recipient and message are required.")
-            writer.write(response)
-            await writer.drain()
-            return
-
-        async with AsyncSessionFactory() as session:
-            result = await session.execute(select(User).where(User.username == recipient_username))
-            recipient = result.scalars().first()
-
-            if not recipient:
-                response = protocol.create_normal_message(f"User '{recipient_username}' not found.")
-                writer.write(response)
-                await writer.drain()
-                return
-
-            if recipient.id not in self.server.online_users:
-                response = protocol.create_normal_message(f"User '{recipient_username}' is offline.")
-                writer.write(response)
-                await writer.drain()
-                return
-
-            recipient_writer = self.server.online_users[recipient.id]
-            message_to_send = protocol.create_client_user_send_message(user.username, message_text)
-            recipient_writer.write(message_to_send)
-            await recipient_writer.drain()
-
-    async def handle_logout(self, writer, user, payload: dict):
-        if user:
-            async with AsyncSessionFactory() as session:
-                user.auth_token = None
-                await session.commit()
-            
-            if user.id in self.server.online_users:
-                del self.server.online_users[user.id]
-
-        response = protocol.create_normal_message("You have been logged out.")
-        writer.write(response)
-        await writer.drain()
-
-    async def write_message_with_drain(self,writer,payload,msg_type=None):
-        if not isinstance(payload, (bytes,bytearray)):
-            if  msg_type:
-                payload = protocol.create_payload( msg_type, payload)
-            else:
-                payload =  protocol.create_normal_message(message=payload)
-        writer.write(payload)
-        await writer.drain()
-
-    async def handle_unknown_message(self, writer, user, payload: dict):
-        print(f"Unknown message type: {payload}")
-        await self.write_message_with_drain(writer,'未知的命令')
-
-
-    async def handle_login(self, writer, user, payload: dict):
-
-        username = payload.get('username')
-        password = payload.get('password')
-        loginip = writer.get_extra_info('peername')[0] if writer.get_extra_info('peername') else ''
-        login_ret,user =await self.user_service.login(username, password,loginip)
-        if login_ret:
-            self.server.online_users[user.id] = writer
-            response_payload = {
-                'message': f"欢迎, {username}!",
-                'auth_token': user.auth_token,
-                'is_admin': user.is_admin
-            }
-            await self.write_message_with_drain(writer,response_payload,'login_success')
-        else:
-            await self.write_message_with_drain(writer,protocol.create_sys_notify(user))
-
-
-    async def handle_reg(self, writer, user, payload: dict):
-        username = payload.get('username')
-        password = payload.get('password')
-        if not username or not password:
-            response = protocol.create_normal_message("Username and password are required.")
-            writer.write(response)
-            await writer.drain()
-            return
-
-        async with AsyncSessionFactory() as session:
-            async with session.begin():
-                # Check if user already exists
-                result = await session.execute(select(User).where(User.username == username))
-                existing_user = result.scalars().first()
-                
-                if existing_user:
-                    response = protocol.create_normal_message("Username already exists.")
-                    writer.write(response)
-                    await writer.drain()
-                    return
-
-                # Hash the password
-                salt, password_hash = auth.hash_password(password)
-                full_password_hash = f"{salt}:{password_hash}"
-                
-                # Create new user
-                new_user = User(
-                    username=username,
-                    password_hash=full_password_hash,
-                    status=1,  # Active
-                    is_admin=False  # Regular user by default
+                # 3. Encapsulate all request data into a single object
+                request = Request(
+                    user=user,
+                    payload=payload,
+                    writer_info={'peername': writer.get_extra_info('peername')},
+                    db_session=session,
+                    writer=writer
                 )
-                
-                session.add(new_user)
-                await session.commit()
-                
-                response = protocol.create_normal_message(f"User '{username}' registered successfully.")
-                writer.write(response)
-                await writer.drain()
+
+                # 4. Call the service method
+                response: Response = await service_method(request)
+
+                # 5. Process the response object
+                if response.is_success:
+                    # Use the response_type from the Response DTO to build the payload
+                    network_message = protocol.create_payload(
+                        response.response_type, 
+                        response.data or {'message': response.message}
+                    )
+                    
+                    if msg_type == 'login':
+                        logged_in_user_id = response.data['user_id']
+                else:
+                    # Generic failure message
+                    network_message = protocol.create_normal_message(response.message)
+
+            except CommandNotFoundError as e:
+                network_message = protocol.create_normal_message(str(e))
+            except PermissionError as e:
+                network_message = protocol.create_normal_message(str(e))
+            except Exception as e:
+                logging.exception(f"An unexpected error occurred while handling '{msg_type}'")
+                network_message = protocol.create_normal_message(f"Server error: An internal error occurred.")
+
+        # 6. Send the response to the client
+        writer.write(network_message)
+        await writer.drain()
+        
+        return logged_in_user_id

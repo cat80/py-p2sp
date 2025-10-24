@@ -53,6 +53,8 @@ class UserFriend(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id_a = Column(Integer, ForeignKey('users.id'))
     user_id_b = Column(Integer, ForeignKey('users.id'))
+    requester_id = Column(Integer, ForeignKey('users.id')) # Who sent the request
+    status = Column(Integer, nullable=False, default=0)  # 0: pending, 1: accepted
     create_time = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
 
     user_a = relationship("User", foreign_keys=[user_id_a])
