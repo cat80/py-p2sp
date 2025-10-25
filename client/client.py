@@ -75,32 +75,63 @@ class ChatClient:
                 _, username, password = parts
                 login_message = AsyncProtocol.create_payload('login', {'username': username, 'password': password})
                 await self.send_message(login_message)
+            elif command == 'add_friend':
+                if not self.auth_token:
+                    print("请先登录。")
+                    continue
+                if len(parts) != 2:
+                    print("用法: add_friend <username>")
+                    continue
+                username = parts[1]
+                payload = {'auth_token': self.auth_token, 'username': username}
+                await self.send_message(AsyncProtocol.create_payload('add_friend', payload))
+
+            elif command == 'accept_friend':
+                if not self.auth_token:
+                    print("请先登录。")
+                    continue
+                if len(parts) != 2:
+                    print("用法: accept_friend <username>")
+                    continue
+                username = parts[1]
+                payload = {'auth_token': self.auth_token, 'username': username}
+                await self.send_message(AsyncProtocol.create_payload('accept_friend', payload))
+
+            elif command == 'myfriends':
+                if not self.auth_token:
+                    print("请先登录。")
+                    continue
+                payload = {'auth_token': self.auth_token}
+                await self.send_message(AsyncProtocol.create_payload('myfriends', payload))
+
             elif command == 'send':
                 if not self.auth_token:
-                    print("You must be logged in to send messages.")
+                    print("请先登录。")
                     continue
                 if len(parts) < 3:
-                    print("Usage: send <username> <message>")
+                    print("用法: send <username> <message>")
                     continue
                 recipient = parts[1]
                 message_text = " ".join(parts[2:])
-                send_payload = {
+                payload = {
                     'auth_token': self.auth_token,
-                    'to_user': recipient,
+                    'username': recipient,
                     'message': message_text
                 }
-                send_message = AsyncProtocol.create_payload('send', send_payload)
-                await self.send_message(send_message)
+                await self.send_message(AsyncProtocol.create_payload('send', payload))
+
             elif command == 'logout':
                 if not self.auth_token:
-                    print("You are not logged in.")
+                    print("您当前未登录。")
                     continue
                 logout_payload = {'auth_token': self.auth_token}
                 logout_message = AsyncProtocol.create_payload('logout', logout_payload)
                 await self.send_message(logout_message)
                 self.auth_token = None
+                print("您已成功登出。")
+            
             else:
-                print(f"Unknown command: {command}")
+                print(f"未知命令: {command}")
 
     async def start(self):
         if not await self.connect():

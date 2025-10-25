@@ -5,28 +5,31 @@ from common.protocol import AsyncProtocol
 from server.handler import ServerMessageHandler
 from server.services.user_service import UserService
 from server.services.friend_service import FriendService
+from server.services.message_service import MessageService
 from server.services.admin_service import AdminService
 from server.managers.connection_manager import ConnectionManager
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class ChatServer:
-    def __init__(self, host='1227.0.0.1', port=8888):
+    def __init__(self, host='127.0.0.1', port=8888):
         self.host = host
         self.port = port
         self.server = None
         
-        # 1. Instantiate Managers and Services
+        # 1. Instantiate Managers and Services, injecting dependencies
         connection_manager = ConnectionManager()
         user_service = UserService(connection_manager)
         friend_service = FriendService(connection_manager)
+        message_service = MessageService(connection_manager)
         admin_service = AdminService(connection_manager)
         
         # 2. Inject all dependencies into the handler
         self.handler = ServerMessageHandler(
             self, 
             user_service, 
-            friend_service, 
+            friend_service,
+            message_service,
             admin_service,
             connection_manager
         )
@@ -68,18 +71,3 @@ class ChatServer:
 
         async with self.server:
             await self.server.serve_forever()
-
-async def main():
-    await create_db_and_tables()
-    server = ChatServer()
-    try:
-        await server.start()
-    finally:
-        await close_engine()
-
-
-if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logging.info("Server is shutting down.")

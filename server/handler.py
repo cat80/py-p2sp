@@ -7,6 +7,7 @@ from server.db.session import get_session
 from server.repository.user_repository import UserRepository
 from server.services.user_service import UserService
 from server.services.friend_service import FriendService
+from server.services.message_service import MessageService
 from server.services.admin_service import AdminService
 from server.managers.connection_manager import ConnectionManager
 
@@ -23,12 +24,14 @@ class ServerMessageHandler:
         server: "ChatServer", 
         user_service: UserService, 
         friend_service: FriendService,
+        message_service: MessageService,
         admin_service: AdminService,
         connection_manager: ConnectionManager
     ):
         self.server = server
         self._user_service = user_service
         self._friend_service = friend_service
+        self._message_service = message_service
         self._admin_service = admin_service
         self.connection_manager = connection_manager
         
@@ -38,9 +41,11 @@ class ServerMessageHandler:
             'login': self._user_service.login,
             'reg': self._user_service.register,
             # Friend Service
-            'add_friend': self._friend_service.request_friend,
+            'add_friend': self._friend_service.add_friend,
             'accept_friend': self._friend_service.accept_friend,
-            'delete_friend': self._friend_service.delete_friend,
+            'myfriends': self._friend_service.list_friends,
+            # Message Service
+            'send': self._message_service.send_private_message,
             # Admin Service
             'broadcast': self._admin_service.broadcast_message,
             'ban_user': self._admin_service.ban_user,
