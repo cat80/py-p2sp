@@ -15,6 +15,8 @@ CMD_MAP = {
     'myfriends': [],
     'send': ['username', 'message'],
     'broadcast': ['message'],
+    'ban_user': ['username'],
+    'permit_user': ['username'],
     'logout': [],
 }
 

@@ -49,6 +49,7 @@ class ServerMessageHandler:
             # Admin Service
             'broadcast': self._admin_service.broadcast_message,
             'ban_user': self._admin_service.ban_user,
+            'permit_user': self._admin_service.permit_user,
         }
 
     async def handle_message(self, writer, message: dict):
