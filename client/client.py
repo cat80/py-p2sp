@@ -1,53 +1,103 @@
 import asyncio
 import logging
 import sys
+import time
 from common.protocol import AsyncProtocol
 from client.handler import ClientMessageHandler
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+CMD_MAP = {
+    'reg': ['username', 'password'],
+    'login': ['username', 'password'],
+    'add_friend': ['username'],
+    'accept_friend': ['username'],
+    'myfriends': [],
+    'send': ['username', 'message'],
+    'broadcast': ['message'],
+    'logout': [],
+}
+
 class ChatClient:
-    def __init__(self, host='127.0.0.1', port=8888):
+    def __init__(self, host='127.0.0.1', port=8888, reconnect_delay=5):
         self.host = host
         self.port = port
         self.reader = None
         self.writer = None
         self.handler = ClientMessageHandler(self)
         self.auth_token = None
+        self.is_admin = False
+        self._is_connected = False
+        self._reconnect_delay = reconnect_delay
+        self._listener_task = None
 
     async def connect(self):
-        try:
-            self.reader, self.writer = await asyncio.open_connection(self.host, self.port)
-            logging.info(f"Connected to server at {self.host}:{self.port}")
-            return True
-        except ConnectionRefusedError:
-            logging.error("Connection refused. Is the server running?")
-            return False
-        except Exception as e:
-            logging.error(f"Failed to connect to server: {e}")
-            return False
+        """Tries to connect to the server with retries."""
+        logging.info(f"正在连接到服务器 {self.host}:{self.port}...")
+        for attempt in range(3):
+            try:
+                self.reader, self.writer = await asyncio.open_connection(self.host, self.port)
+                self._is_connected = True
+                logging.info("成功连接到服务器。")
+                # Start the message listener upon successful connection
+                if self._listener_task:
+                    self._listener_task.cancel()
+                self._listener_task = asyncio.create_task(self.listen_for_messages())
+                return True
+            except ConnectionRefusedError:
+                logging.warning(f"连接被拒绝。将在 {self._reconnect_delay} 秒后重试... ({attempt + 1}/3)")
+                await asyncio.sleep(self._reconnect_delay)
+            except Exception as e:
+                logging.error(f"连接失败: {e}。将在 {self._reconnect_delay} 秒后重试... ({attempt + 1}/3)")
+                await asyncio.sleep(self._reconnect_delay)
+        
+        logging.error("无法连接到服务器。请检查服务器地址或网络连接。")
+        return False
 
     async def listen_for_messages(self):
+        """Listens for incoming messages and handles disconnection."""
         buffer = b''
-        while True:
+        while self._is_connected:
             try:
-                # 从协议中解析数据
                 message, buffer = await AsyncProtocol.deserialize_stream(self.reader, buffer)
                 if message is None:
-                    logging.info("Server closed the connection.")
-                    break
+                    raise ConnectionError("服务器关闭了连接。")
                 await self.handler.handle_message(message)
+            except (ConnectionError, asyncio.IncompleteReadError) as e:
+                logging.warning(f"与服务器的连接已断开: {e}")
+                self._is_connected = False
+                self.writer.close()
+                await self.writer.wait_closed()
+                self.writer = None
+                self.reader = None
+                # Do not attempt to reconnect here, let the next user action trigger it.
+                print("\n[系统提示] 与服务器断开连接。下次发送消息时将尝试自动重连。")
+                break # Exit the listening loop
             except Exception as e:
-                logging.error(f"Error receiving message: {e}")
+                logging.error(f"接收消息时发生未知错误: {e}")
+                self._is_connected = False # Assume connection is dead
                 break
-        await self.close()
+
 
     async def send_message(self, message: bytes):
-        if self.writer:
+        """Ensures connection is active before sending, attempts reconnect if not."""
+        if not self._is_connected:
+            print("[系统提示] 连接已断开，正在尝试重新连接...")
+            if not await self.connect():
+                print("[系统提示] 重连失败。请稍后再试。")
+                return False
+        
+        try:
             self.writer.write(message)
             await self.writer.drain()
+            return True
+        except ConnectionError as e:
+            logging.error(f"发送消息失败: {e}")
+            self._is_connected = False
+            return False
 
     async def handle_user_input(self):
+        """Generic command processor driven by CMD_MAP."""
         loop = asyncio.get_running_loop()
         while True:
             line = await loop.run_in_executor(None, sys.stdin.readline)
@@ -56,104 +106,69 @@ class ChatClient:
                 continue
 
             parts = command_line.split()
-            command = parts[0]
+            command = parts[0].lower()
 
             if command == 'exit':
                 break
+
+            if command not in ['login', 'reg'] and not self.auth_token:
+                print("此操作需要登录，请先使用 'login' 命令登录。")
+                continue
+
+            if command not in CMD_MAP:
+                print(f"未知命令: '{command}'")
+                continue
+
+            param_names = CMD_MAP[command]
+            num_expected_params = len(param_names)
+            user_params = parts[1:]
+
+            if len(user_params) < num_expected_params:
+                usage = f"用法: {command} " + " ".join([f"<{p}>" for p in param_names])
+                print(usage)
+                continue
+
+            payload = {'auth_token': self.auth_token}
+            if num_expected_params > 0:
+                # Assign first N-1 parameters
+                for i in range(num_expected_params - 1):
+                    payload[param_names[i]] = user_params[i]
+                # Assign the rest to the last parameter
+                payload[param_names[-1]] = " ".join(user_params[num_expected_params - 1:])
             
-            if command == 'reg':
-                if len(parts) != 3:
-                    print("Usage: reg <username> <password>")
-                    continue
-                _, username, password = parts
-                reg_message = AsyncProtocol.create_payload('reg', {'username': username, 'password': password})
-                await self.send_message(reg_message)
-            elif command == 'login':
-                if len(parts) != 3:
-                    print("Usage: login <username> <password>")
-                    continue
-                _, username, password = parts
-                login_message = AsyncProtocol.create_payload('login', {'username': username, 'password': password})
-                await self.send_message(login_message)
-            elif command == 'add_friend':
-                if not self.auth_token:
-                    print("请先登录。")
-                    continue
-                if len(parts) != 2:
-                    print("用法: add_friend <username>")
-                    continue
-                username = parts[1]
-                payload = {'auth_token': self.auth_token, 'username': username}
-                await self.send_message(AsyncProtocol.create_payload('add_friend', payload))
+            if not await self.send_message(AsyncProtocol.create_payload(command, payload)):
+                continue # Don't proceed if sending failed
 
-            elif command == 'accept_friend':
-                if not self.auth_token:
-                    print("请先登录。")
-                    continue
-                if len(parts) != 2:
-                    print("用法: accept_friend <username>")
-                    continue
-                username = parts[1]
-                payload = {'auth_token': self.auth_token, 'username': username}
-                await self.send_message(AsyncProtocol.create_payload('accept_friend', payload))
-
-            elif command == 'myfriends':
-                if not self.auth_token:
-                    print("请先登录。")
-                    continue
-                payload = {'auth_token': self.auth_token}
-                await self.send_message(AsyncProtocol.create_payload('myfriends', payload))
-
-            elif command == 'send':
-                if not self.auth_token:
-                    print("请先登录。")
-                    continue
-                if len(parts) < 3:
-                    print("用法: send <username> <message>")
-                    continue
-                recipient = parts[1]
-                message_text = " ".join(parts[2:])
-                payload = {
-                    'auth_token': self.auth_token,
-                    'username': recipient,
-                    'message': message_text
-                }
-                await self.send_message(AsyncProtocol.create_payload('send', payload))
-
-            elif command == 'logout':
-                if not self.auth_token:
-                    print("您当前未登录。")
-                    continue
-                logout_payload = {'auth_token': self.auth_token}
-                logout_message = AsyncProtocol.create_payload('logout', logout_payload)
-                await self.send_message(logout_message)
+            if command == 'logout':
                 self.auth_token = None
+                self.is_admin = False
                 print("您已成功登出。")
-            
-            else:
-                print(f"未知命令: {command}")
 
     async def start(self):
         if not await self.connect():
-            return
-
-        listener_task = asyncio.create_task(self.listen_for_messages())
-        input_task = asyncio.create_task(self.handle_user_input())
-
-        await asyncio.gather(listener_task, input_task)
+            # Even if initial connection fails, we start the input loop
+            # so the user can try commands that will trigger reconnects.
+            pass
+            
+        await self.handle_user_input()
 
     async def close(self):
         if self.writer:
             self.writer.close()
             await self.writer.wait_closed()
-            logging.info("Connection closed.")
+        if self._listener_task:
+            self._listener_task.cancel()
+        logging.info("客户端已关闭。")
 
 async def main():
     client = ChatClient()
-    await client.start()
+    try:
+        await client.start()
+    finally:
+        await client.close()
 
 if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logging.info("Client is shutting down.")
+        logging.info("客户端正在关闭。")
