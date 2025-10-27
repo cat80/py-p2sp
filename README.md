@@ -55,6 +55,7 @@ py-p2sp 是一个基于 Python asyncio 的异步 C/S 架构聊天程序。该项
 
 #### 好友管理
 - 添加好友
+- 接受好友邀请
 - 查看好友列表（显示在线状态）
 - 私聊消息（支持离线消息）
 
@@ -102,6 +103,23 @@ python run_client.py
 
 默认服务端口为 18888。
 
+### 客户端命令
+
+客户端支持以下命令：
+
+| 命令 | 参数 | 说明 |
+|------|------|------|
+| reg | `<username> <password>` | 注册新用户 |
+| login | `<username> <password>` | 用户登录 |
+| add_friend | `<username>` | 添加好友 |
+| accept_friend | `<username>` | 接受好友请求 |
+| myfriends | 无 | 查看好友列表 |
+| send | `<username> <message>` | 发送私聊消息 |
+| broadcast | `<message>` | 管理员广播消息 |
+| ban_user | `<username>` | 管理员封禁用户 |
+| permit_user | `<username>` | 管理员解禁用户 |
+| logout | 无 | 用户登出 |
+
 ## 数据库设计
 
 项目使用 SQLite 数据库存储用户信息、好友关系、群组信息和离线消息等。
@@ -140,4 +158,4 @@ MAGIC_HEADER + Checksum + PayloadLen + Payload
 
 ## 总结
 
-通过这个项目，我们深入理解了网络编程和 asyncio 异步编程模型，为后续开发基于 P2P 的应用（如加密货币网络部分）奠定了坚实基础。
+通过这个项目，能深入理解了网络编程和 asyncio 异步编程模型，为后续开发基于 P2P 的应用（如加密货币网络部分）奠定了坚实基础。
